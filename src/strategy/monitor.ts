@@ -36,6 +36,8 @@ interface Monitor {
   stopped: boolean;
   lowerBinId: number;
   upperBinId: number;
+  /** maxSteps alert sent once per cycle; reset when a new cycle starts. */
+  maxStepsAlerted: boolean;
 }
 
 /**
@@ -106,6 +108,7 @@ export class FlipEngine {
       stopped: false,
       lowerBinId: found.lowerBinId,
       upperBinId: found.upperBinId,
+      maxStepsAlerted: false,
     };
     this.monitors.set(positionAddress, monitor);
     logAction("flipActivated", {
@@ -210,12 +213,16 @@ export class FlipEngine {
       monitor.sm,
     );
 
-    if (decision.action === "MONITOR") return;
+    if (decision.action === "MONITOR") {
+      // Price back above the maxSteps limit — allow a fresh alert if it dips again.
+      monitor.maxStepsAlerted = false;
+      return;
+    }
 
     if (decision.action === "MAX_STEPS_EXCEEDED") {
-      // Alert once per tick would spam; alert only when crossing from a level
-      // below maxSteps is impossible here — decide() only returns this when
-      // lastLevel >= maxSteps, so notify and keep monitoring (FR-6.2).
+      // Alert once per exceeded episode; the loop keeps ticking (FR-6.2).
+      if (monitor.maxStepsAlerted) return;
+      monitor.maxStepsAlerted = true;
       const limit =
         decision.thresholdBinId !== null
           ? `bin \`${decision.thresholdBinId}\``

@@ -138,6 +138,10 @@ docker compose up -d --build # redeploy setelah update kode
 Catatan:
 - `.env` dimuat via `env_file` — tidak ikut masuk ke dalam image.
 - `config.json` di-mount read-only, `./state` di-mount agar `state/state.json` persist antar restart.
+- Container berjalan sebagai user `node` (UID 1000). Folder `state/` di host harus writable oleh UID tersebut:
+  ```bash
+  sudo chown -R 1000:1000 ./state   # jalankan sekali setelah mkdir state
+  ```
 - `.env` dan `config.json` tetap tidak boleh di-commit; image tidak berisi secret apa pun.
 
 ## Deploy di VPS dengan PM2
