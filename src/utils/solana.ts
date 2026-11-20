@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import BN from "bn.js";
 import bs58 from "bs58";
 
 export function getConnection(): Connection {
@@ -68,4 +69,24 @@ export function toPubkey(value: string, label: string): PublicKey {
   } catch {
     throw new Error(`Invalid ${label} pubkey: ${value}`);
   }
+}
+
+/**
+ * Wallet balance (raw) of a given token mint, 0 when the ATA does not exist.
+ * Works for both SPL Token and Token-2022 accounts.
+ */
+export async function getWalletTokenBalance(
+  connection: Connection,
+  owner: PublicKey,
+  mint: PublicKey,
+): Promise<BN> {
+  const atas = await connection.getTokenAccountsByOwner(owner, { mint });
+  if (atas.value.length === 0) return new BN(0);
+  // Take the largest account to be safe against transient/dust ATAs.
+  let max = new BN(0);
+  for (const { account } of atas.value) {
+    const amount = new BN(Buffer.from(account.data.subarray(64, 72)), "le");
+    if (amount.gt(max)) max = amount;
+  }
+  return max;
 }

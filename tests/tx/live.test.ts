@@ -9,20 +9,25 @@ import type { LevelExecution } from "../../src/strategy/monitor.ts";
 import type { TelegramNotifier } from "../../src/notify/telegram.ts";
 import type { AppConfig } from "../../src/config/schema.ts";
 
-const { loadPoolMock, signAndSendMock } = vi.hoisted(() => ({
+const { loadPoolMock, signAndSendMock, balanceMock } = vi.hoisted(() => ({
   loadPoolMock: vi.fn(),
   signAndSendMock: vi.fn(),
+  balanceMock: vi.fn(),
 }));
 
 vi.mock("../../src/dlmm/pool.ts", () => ({ loadPool: loadPoolMock }));
 vi.mock("../../src/tx/send.ts", () => ({ signAndSend: signAndSendMock }));
+vi.mock("../../src/utils/solana.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/utils/solana.ts")>();
+  return { ...actual, getWalletTokenBalance: balanceMock };
+});
 
 import { liveExecutor } from "../../src/tx/live.ts";
 
 const POSITION = "6ocDFefJrq5EcfoYtKQEEQPUkgHZa5bRTnbw8uSDuhcK";
 const POOL = "4e9ismoKcsCpFqKmSsVvGdVZLp8cyKzz7wLwr1HqoXFM";
 
-function fakePool(activeBinId: number, baseAmount: string) {
+function fakePool(activeBinId: number, baseAmount: string, activeBinAfterWithdraw = activeBinId) {
   const positionData = {
     lowerBinId: 100,
     upperBinId: 120,
@@ -32,17 +37,23 @@ function fakePool(activeBinId: number, baseAmount: string) {
     ],
   };
   return {
-    getActiveBin: vi.fn().mockResolvedValue({ binId: activeBinId, pricePerToken: "80" }),
+    // 1st call (pre-withdraw) → activeBinId; after refetchStates → rebound value
+    getActiveBin: vi
+      .fn()
+      .mockResolvedValueOnce({ binId: activeBinId, pricePerToken: "80" })
+      .mockResolvedValue({ binId: activeBinAfterWithdraw, pricePerToken: "80" }),
     getPosition: vi.fn().mockResolvedValue({ publicKey: toPubkey(POSITION, "position"), positionData }),
     removeLiquidity: vi.fn().mockResolvedValue([{}]),
     addLiquidityByStrategy: vi.fn().mockResolvedValue({}),
     refetchStates: vi.fn().mockResolvedValue(undefined),
     lbPair: { binStep: 100 },
+    tokenX: { mint: { address: toPubkey(POOL, "pool") } },
   } as unknown as DLMM & Record<string, ReturnType<typeof vi.fn>>;
 }
 
-function deps(pool: DLMM, sendResult: string[] | Error) {
+function deps(pool: DLMM, sendResult: string[] | Error, balance: string = "25") {
   signAndSendMock.mockReset();
+  balanceMock.mockReset().mockResolvedValue(new BN(balance));
   if (sendResult instanceof Error) {
     signAndSendMock.mockRejectedValue(sendResult);
   } else {
@@ -116,6 +127,58 @@ describe("liveExecutor (T-4.1/T-4.2 integration)", () => {
     expect(signAndSendMock).not.toHaveBeenCalled();
     expect(notifier.send).toHaveBeenCalledTimes(1);
     expect(vi.mocked(notifier.send).mock.calls[0][0]).toContain("no base liquidity left");
+  });
+
+  it("caps the re-add amount to the wallet's actual X balance", async () => {
+    const pool = fakePool(105, "25");
+    const { configDeps, notifier } = deps(pool, ["sig-a", "sig-b"], "24");
+    loadPoolMock.mockResolvedValue(pool);
+
+    await liveExecutor(configDeps)(EXEC);
+
+    expect(pool.addLiquidityByStrategy).toHaveBeenCalledWith(
+      expect.objectContaining({ totalXAmount: new BN(24) }),
+    );
+    const messages = vi.mocked(notifier.send).mock.calls.map((c) => c[0]);
+    expect(messages.some((m) => m.includes("capped to wallet balance"))).toBe(true);
+    expect(signAndSendMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips the re-add when the wallet X balance is 0 after withdraw", async () => {
+    const pool = fakePool(105, "25");
+    const { configDeps } = deps(pool, ["sig-a"], "0");
+    loadPoolMock.mockResolvedValue(pool);
+
+    await liveExecutor(configDeps)(EXEC);
+
+    expect(pool.addLiquidityByStrategy).not.toHaveBeenCalled();
+    expect(signAndSendMock).toHaveBeenCalledTimes(1); // withdraw only
+  });
+
+  it("recomputes the re-add range from the fresh active bin when price rebounds mid-level", async () => {
+    const pool = fakePool(105, "25", 115);
+    const { configDeps } = deps(pool, ["sig-a", "sig-b"]);
+    loadPoolMock.mockResolvedValue(pool);
+
+    await liveExecutor(configDeps)(EXEC);
+
+    expect(pool.addLiquidityByStrategy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        strategy: expect.objectContaining({ minBinId: 116, maxBinId: 120 }),
+      }),
+    );
+  });
+
+  it("skips the re-add safely when the price rebounds above the position range", async () => {
+    const pool = fakePool(105, "25", 125);
+    const { configDeps, notifier } = deps(pool, ["sig-a"]);
+    loadPoolMock.mockResolvedValue(pool);
+
+    await liveExecutor(configDeps)(EXEC);
+
+    expect(pool.addLiquidityByStrategy).not.toHaveBeenCalled();
+    expect(signAndSendMock).toHaveBeenCalledTimes(1); // withdraw only
+    expect(vi.mocked(notifier.send).mock.calls.some((c) => c[0].includes("rebounded"))).toBe(true);
   });
 
   it("propagates send failures so the engine stops the cycle (FR-3.6)", async () => {

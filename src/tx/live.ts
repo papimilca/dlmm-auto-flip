@@ -5,6 +5,7 @@ import type { AppConfig } from "../config/schema.js";
 import type { TelegramNotifier } from "../notify/telegram.js";
 import { loadPool } from "../dlmm/pool.js";
 import { logAction } from "../logger/index.js";
+import { getWalletTokenBalance } from "../utils/solana.js";
 import { signAndSend } from "./send.js";
 import { planWithdrawBase } from "./withdraw.js";
 import { planReAddBase } from "./readd.js";
@@ -61,13 +62,63 @@ export function liveExecutor(deps: LiveExecutorDeps): LevelExecutor {
     // pins the active bin seen at build time and the price has been moving
     // (the withdraw itself shifts it), so a stale activeId trips error 6004.
     await pool.refetchStates();
+    // Recompute the base-side range from the FRESH active bin: the price may
+    // have rebounded past the withdrawn range since the withdraw, in which
+    // case the old range is no longer strictly above the active bin (bins at
+    // or below the active bin hold token Y, and a singleSidedX add over such
+    // a range fails with token "insufficient funds").
+    const freshActiveBin = await pool.getActiveBin();
+    const addFromBinId = Math.max(freshActiveBin.binId + 1, plan.lowerBinId);
+    if (addFromBinId > plan.upperBinId) {
+      logAction("reAddSkippedPriceRebounded", {
+        positionAddress: exec.positionAddress,
+        level: exec.level,
+        activeBinId: freshActiveBin.binId,
+        upperBinId: plan.upperBinId,
+        amountX: plan.baseAmountX,
+      });
+      notifier.send(
+        `ℹ️ *Level ${exec.level} re-add skipped — price rebounded above the position range*\nposition: \`${exec.positionAddress}\`\nactive bin: ${freshActiveBin.binId} ≥ upper bin: ${plan.upperBinId}\namount X stays in wallet: \`${plan.baseAmountX}\``,
+      );
+      return;
+    }
+    // Cap the add amount to the wallet's ACTUAL X balance: the pre-withdraw
+    // estimate can exceed what removeLiquidity actually delivered (per-bin
+    // rounding leaves residue), which would fail the add with token
+    // "insufficient funds" on every retry.
+    const requestedX = new BN(plan.baseAmountX);
+    const balanceX = await getWalletTokenBalance(connection, user, pool.tokenX.mint.address);
+    const addAmountX = BN.min(requestedX, balanceX);
+    if (addAmountX.isZero()) {
+      logAction("reAddSkippedNoBalance", {
+        positionAddress: exec.positionAddress,
+        level: exec.level,
+        requestedX: plan.baseAmountX,
+        balanceX: balanceX.toString(),
+      });
+      notifier.send(
+        `ℹ️ *Level ${exec.level} re-add skipped — wallet X balance is 0*\nposition: \`${exec.positionAddress}\``,
+      );
+      return;
+    }
+    if (addAmountX.lt(requestedX)) {
+      logAction("reAddAmountCapped", {
+        positionAddress: exec.positionAddress,
+        level: exec.level,
+        requestedX: plan.baseAmountX,
+        actualX: addAmountX.toString(),
+      });
+      notifier.send(
+        `⚠️ *Level ${exec.level} re-add capped to wallet balance*\nposition: \`${exec.positionAddress}\`\nrequested: \`${plan.baseAmountX}\`\nactual: \`${addAmountX.toString()}\``,
+      );
+    }
     const addTx = await planReAddBase(
       pool,
       exec.positionAddress,
       user,
-      new BN(plan.baseAmountX),
-      plan.fromBinId,
-      plan.toBinId,
+      addAmountX,
+      addFromBinId,
+      plan.upperBinId,
       config.slippageBps,
     );
     const addSigs = await signAndSend(connection, wallet, [addTx], {
@@ -76,12 +127,12 @@ export function liveExecutor(deps: LiveExecutorDeps): LevelExecutor {
     logAction("reAddSuccess", {
       positionAddress: exec.positionAddress,
       level: exec.level,
-      amountX: plan.baseAmountX,
-      bins: `${plan.fromBinId}-${plan.toBinId}`,
+      amountX: addAmountX.toString(),
+      bins: `${addFromBinId}-${plan.upperBinId}`,
       txSignatures: addSigs,
     });
     notifier.send(
-      `✅ *Re-add level ${exec.level}*\nposition: \`${exec.positionAddress}\`\namount X: \`${plan.baseAmountX}\`\nbins: ${plan.fromBinId}–${plan.toBinId}\ntx: ${addSigs.map(sigLinks(exec.poolAddress)).join(", ")}`,
+      `✅ *Re-add level ${exec.level}*\nposition: \`${exec.positionAddress}\`\namount X: \`${addAmountX.toString()}\`\nbins: ${addFromBinId}–${plan.upperBinId}\ntx: ${addSigs.map(sigLinks(exec.poolAddress)).join(", ")}`,
     );
   };
 }

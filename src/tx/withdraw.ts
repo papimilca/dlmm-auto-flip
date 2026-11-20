@@ -10,6 +10,10 @@ export interface WithdrawPlan {
   baseAmountX: string;
   fromBinId: number;
   toBinId: number;
+  /** Position full bin range — needed to recompute the base-side range when
+   * the active bin moves between withdraw and re-add (price rebound). */
+  lowerBinId: number;
+  upperBinId: number;
 }
 
 /**
@@ -38,5 +42,5 @@ export async function planWithdrawBase(
     bps: new BN(10_000), // 100% — withdraw ALL remaining base side (T-0.5)
     shouldClaimAndClose: false,
   });
-  return { txs, baseAmountX, fromBinId, toBinId: d.upperBinId };
+  return { txs, baseAmountX, fromBinId, toBinId: d.upperBinId, lowerBinId: d.lowerBinId, upperBinId: d.upperBinId };
 }
