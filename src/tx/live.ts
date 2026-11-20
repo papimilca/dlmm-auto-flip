@@ -57,7 +57,10 @@ export function liveExecutor(deps: LiveExecutorDeps): LevelExecutor {
       `✅ *Withdraw level ${exec.level}*\nposition: \`${exec.positionAddress}\`\namount X: \`${plan.baseAmountX}\`\nbins: ${plan.fromBinId}–${plan.toBinId}\ntx: ${withdrawSigs.map(sigLinks(exec.poolAddress)).join(", ")}`,
     );
 
-    // 2. Re-add to the same position (FR-4.1a)
+    // 2. Re-add to the same position (FR-4.1a). Refresh state first: the tx
+    // pins the active bin seen at build time and the price has been moving
+    // (the withdraw itself shifts it), so a stale activeId trips error 6004.
+    await pool.refetchStates();
     const addTx = await planReAddBase(
       pool,
       exec.positionAddress,

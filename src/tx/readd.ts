@@ -10,7 +10,17 @@ import { loadSdkModule } from "../dlmm/sdk.js";
  * token back into the SAME position, single-sided X, over the base-side bins
  * the position owns (minBinId..maxBinId — both strictly above the active bin).
  * Slippage comes from config in bps; the SDK expects a percentage (FR-4.3).
+ *
+ * The on-chain check is "active bin moved ≤ maxActiveBinSlippage bins since
+ * tx build time" (error 6004 ExceededBinSlippageTolerance). The SDK derives
+ * that bin count as ceil(slippagePct / binStepPct), so for coarse binStep
+ * pools a small pct slippage can yield a tolerance of only 1 bin. We widen
+ * the effective slippage so at least MIN_BIN_SLIPPAGE_COVERAGE bins are
+ * tolerated — price is dropping fast at trigger time, so the active bin can
+ * legitimately shift several bins while the tx is in flight.
  */
+const MIN_BIN_SLIPPAGE_COVERAGE = 10;
+
 export async function planReAddBase(
   pool: DLMM,
   positionAddress: string,
@@ -20,6 +30,9 @@ export async function planReAddBase(
   maxBinId: number,
   slippageBps: number,
 ): Promise<Transaction> {
+  const configPct = slippageBps / 100;
+  const binStepPct = pool.lbPair.binStep / 100;
+  const slippage = Math.max(configPct, MIN_BIN_SLIPPAGE_COVERAGE * binStepPct);
   return pool.addLiquidityByStrategy({
     positionPubKey: toPubkey(positionAddress, "position"),
     totalXAmount: baseAmountX,
@@ -31,6 +44,6 @@ export async function planReAddBase(
       singleSidedX: true,
     },
     user,
-    slippage: slippageBps / 100,
+    slippage,
   });
 }

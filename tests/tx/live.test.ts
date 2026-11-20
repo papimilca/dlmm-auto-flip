@@ -36,6 +36,8 @@ function fakePool(activeBinId: number, baseAmount: string) {
     getPosition: vi.fn().mockResolvedValue({ publicKey: toPubkey(POSITION, "position"), positionData }),
     removeLiquidity: vi.fn().mockResolvedValue([{}]),
     addLiquidityByStrategy: vi.fn().mockResolvedValue({}),
+    refetchStates: vi.fn().mockResolvedValue(undefined),
+    lbPair: { binStep: 100 },
   } as unknown as DLMM & Record<string, ReturnType<typeof vi.fn>>;
 }
 

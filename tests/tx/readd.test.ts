@@ -11,7 +11,10 @@ const USER = Keypair.generate().publicKey;
 describe("planReAddBase (T-4.2)", () => {
   it("adds single-sided X back to the SAME position base-side bins", async () => {
     const addLiquidityByStrategy = vi.fn().mockResolvedValue({});
-    const pool = { addLiquidityByStrategy } as unknown as DLMM;
+    const pool = {
+      addLiquidityByStrategy,
+      lbPair: { binStep: 100 }, // 1% per bin
+    } as unknown as DLMM;
     await planReAddBase(pool, POSITION, USER, new BN(25), 106, 120, 100);
     expect(addLiquidityByStrategy).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -25,7 +28,8 @@ describe("planReAddBase (T-4.2)", () => {
           singleSidedX: true,
         },
         user: USER,
-        slippage: 1, // 100 bps → 1%
+        // 100 bps (1%) is widened to 10% so 10 bins of active-bin movement are tolerated
+        slippage: 10,
       }),
     );
   });
