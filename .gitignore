@@ -1,0 +1,16 @@
+# secrets
+.env
+
+# runtime state & logs
+state/
+logs/
+
+# build
+dist/
+node_modules/
+
+# misc
+*.log
+.DS_Store
+
+config.json

@@ -1,0 +1,10 @@
+{
+  "stepPct": -10,
+  "triggerMode": "binPct",
+  "maxSteps": 5,
+  "slippageBps": 100,
+  "dryRun": true,
+  "pollIntervalMs": 5000,
+  "txMaxRetries": 3,
+  "telegramPollTimeoutSec": 30
+}
