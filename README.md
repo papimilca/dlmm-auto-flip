@@ -117,6 +117,29 @@ Setelah bot berjalan, kirim command ke bot Anda:
 
 ---
 
+## Deploy dengan Docker Compose
+
+```bash
+# Pastikan .env, config.json, dan folder state/ sudah siap di host
+mkdir -p state
+docker compose up -d --build
+```
+
+Perintah operasional:
+
+```bash
+docker compose ps            # cek status
+docker compose logs -f ba_flip
+docker compose restart       # restart setelah ubah config/env
+docker compose down          # stop
+docker compose up -d --build # redeploy setelah update kode
+```
+
+Catatan:
+- `.env` dimuat via `env_file` — tidak ikut masuk ke dalam image.
+- `config.json` di-mount read-only, `./state` di-mount agar `state/state.json` persist antar restart.
+- `.env` dan `config.json` tetap tidak boleh di-commit; image tidak berisi secret apa pun.
+
 ## Deploy di VPS dengan PM2
 
 ### 1. Siapkan VPS

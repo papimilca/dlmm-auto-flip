@@ -1,0 +1,10 @@
+node_modules
+dist
+state
+tests
+.git
+.env
+.env.*
+!.env.example
+*.md
+ecosystem.config.cjs

@@ -1,0 +1,25 @@
+services:
+  ba_flip:
+    build: .
+    image: ba_flip:latest
+    container_name: ba_flip
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Mount config & state from host — keeps secrets out of the image
+      # and persists the flip cycle state across container restarts.
+      - ./config.json:/app/config.json:ro
+      - ./state:/app/state
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "7"
+    # Healthcheck: process alive; no HTTP endpoint in this bot.
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
