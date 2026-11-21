@@ -19,7 +19,7 @@ vi.mock("../../src/dlmm/pool.ts", () => ({ loadPool: loadPoolMock }));
 vi.mock("../../src/tx/send.ts", () => ({ signAndSend: signAndSendMock }));
 vi.mock("../../src/utils/solana.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/utils/solana.ts")>();
-  return { ...actual, getWalletTokenBalance: balanceMock };
+  return { ...actual, getWalletTokenBalance: balanceMock, getWalletBalanceForMint: balanceMock };
 });
 
 import { liveExecutor } from "../../src/tx/live.ts";

@@ -5,7 +5,7 @@ import type { AppConfig } from "../config/schema.js";
 import type { TelegramNotifier } from "../notify/telegram.js";
 import { loadPool } from "../dlmm/pool.js";
 import { logAction } from "../logger/index.js";
-import { getWalletTokenBalance } from "../utils/solana.js";
+import { getWalletBalanceForMint } from "../utils/solana.js";
 import { signAndSend } from "./send.js";
 import { planWithdrawBase, planWithdrawQuote } from "./withdraw.js";
 import { planReAddBase, planReAddQuoteBidAsk, planReAddQuoteSpot } from "./readd.js";
@@ -87,7 +87,7 @@ export function liveExecutor(deps: LiveExecutorDeps): LevelExecutor {
     // rounding leaves residue), which would fail the add with token
     // "insufficient funds" on every retry.
     const requestedX = new BN(plan.baseAmountX);
-    const balanceX = await getWalletTokenBalance(connection, user, pool.tokenX.mint.address);
+    const balanceX = await getWalletBalanceForMint(connection, user, pool.tokenX.mint.address);
     const addAmountX = BN.min(requestedX, balanceX);
     if (addAmountX.isZero()) {
       logAction("reAddSkippedNoBalance", {
@@ -209,7 +209,7 @@ export function liveReverseExecutor(deps: LiveExecutorDeps): ReverseExecutor {
     // Cap to the wallet's ACTUAL Y balance (mirrors the base-side fix:
     // per-bin rounding can leave the delivered amount below the estimate).
     const requestedY = new BN(plan.quoteAmountY);
-    const balanceY = await getWalletTokenBalance(connection, user, pool.tokenY.mint.address);
+    const balanceY = await getWalletBalanceForMint(connection, user, pool.tokenY.mint.address);
     const addAmountY = BN.min(requestedY, balanceY);
     if (addAmountY.isZero()) {
       logAction("reverseReAddSkippedNoBalance", {

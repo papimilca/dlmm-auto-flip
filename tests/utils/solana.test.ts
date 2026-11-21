@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import BN from "bn.js";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import type { Connection } from "@solana/web3.js";
-import { getWalletTokenBalance } from "../../src/utils/solana.ts";
+import { getWalletTokenBalance, getWalletBalanceForMint, WSOL_MINT } from "../../src/utils/solana.ts";
 
 /** SPL token account: amount u64 at offset 64. */
 function tokenAccount(amount: BN): Buffer {
@@ -43,5 +43,32 @@ describe("getWalletTokenBalance", () => {
     expect(
       (await getWalletTokenBalance(conn, new PublicKey(owner), new PublicKey(mint))).toString(),
     ).toBe("7");
+  });
+});
+
+describe("getWalletBalanceForMint (wSOL unwrapped to native SOL)", () => {
+  const owner = Keypair.generate().publicKey;
+
+  function fakeSolConnection(lamports: number) {
+    return {
+      getBalance: vi.fn().mockResolvedValue(lamports),
+    } as unknown as Connection;
+  }
+
+  it("reads native SOL balance minus fee reserve when mint is wSOL", async () => {
+    const conn = fakeSolConnection(200_000_000);
+    // 200,000,000 - 10,000,000 fee reserve
+    expect((await getWalletBalanceForMint(conn, owner, WSOL_MINT)).toString()).toBe("190000000");
+  });
+
+  it("returns 0 when native SOL is below the fee reserve", async () => {
+    const conn = fakeSolConnection(5_000_000);
+    expect((await getWalletBalanceForMint(conn, owner, WSOL_MINT)).isZero()).toBe(true);
+  });
+
+  it("falls back to token accounts for non-wSOL mints", async () => {
+    const mint = Keypair.generate().publicKey;
+    const conn = fakeConnection([tokenAccount(new BN(123))]);
+    expect((await getWalletBalanceForMint(conn, owner, mint)).toString()).toBe("123");
   });
 });

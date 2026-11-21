@@ -90,3 +90,26 @@ export async function getWalletTokenBalance(
   }
   return max;
 }
+
+export const WSOL_MINT = new PublicKey("So11111111111111111111111111111111111111112");
+
+/** Lamports reserved for tx fees/rent when spending the native SOL balance. */
+const FEE_RESERVE_LAMPORTS = 10_000_000; // 0.01 SOL
+
+/**
+ * Balance of a token mint, treating wSOL as native SOL: Meteora's
+ * removeLiquidity unwraps wSOL to native lamports (the wallet often holds no
+ * wSOL ATA at all), so the raw token-account balance reads 0. Native balance
+ * is read minus a small fee reserve so the wallet can still pay for fees.
+ */
+export async function getWalletBalanceForMint(
+  connection: Connection,
+  owner: PublicKey,
+  mint: PublicKey,
+): Promise<BN> {
+  if (mint.equals(WSOL_MINT)) {
+    const lamports = await connection.getBalance(owner, "confirmed");
+    return new BN(Math.max(lamports - FEE_RESERVE_LAMPORTS, 0));
+  }
+  return getWalletTokenBalance(connection, owner, mint);
+}
