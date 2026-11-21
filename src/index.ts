@@ -6,8 +6,8 @@ import { StateStore } from "./state/persistence.js";
 import { TelegramNotifier } from "./notify/telegram.js";
 import { TelegramApi } from "./telegram/api.js";
 import { TelegramBot, FLIP_ON_PREFIX, FLIP_OFF_PREFIX, type CommandHandlers } from "./telegram/bot.js";
-import { FlipEngine, type LevelExecution } from "./strategy/monitor.js";
-import { liveExecutor } from "./tx/live.js";
+import { FlipEngine, type LevelExecution, type ReverseExecution } from "./strategy/monitor.js";
+import { liveExecutor, liveReverseExecutor } from "./tx/live.js";
 import type { WalletPosition } from "./dlmm/position.js";
 import type { AppConfig } from "./config/schema.js";
 
@@ -113,6 +113,23 @@ function dryRunExecutor(notifier: TelegramNotifier): (exec: LevelExecution) => P
   };
 }
 
+/**
+ * Dry-run reverse flip executor (FR-9, AC-10): decisions identical, no tx sent.
+ */
+function dryRunReverseExecutor(notifier: TelegramNotifier): (exec: ReverseExecution) => Promise<void> {
+  return async (exec) => {
+    logAction("dryRunReverseFlipExecution", {
+      positionAddress: exec.positionAddress,
+      level: exec.level,
+      wouldWithdraw: "ALL remaining quote (Y) token",
+      wouldReAdd: `add to SAME position, quote-side bins ${exec.minBinId}–${exec.maxBinId}`,
+    });
+    notifier.send(
+      `🧪 *DRY-RUN reverse flip level ${exec.level}*\nposition: \`${exec.positionAddress}\`\nwithdraw: ALL quote token → re-add to same position, bins ${exec.minBinId}–${exec.maxBinId}`,
+    );
+  };
+}
+
 async function main(): Promise<void> {
   const config = loadConfig(CONFIG_PATH);
 
@@ -142,6 +159,7 @@ async function main(): Promise<void> {
     store,
     notifier,
     config.dryRun ? dryRunExecutor(notifier) : liveExecutor({ connection, wallet, config, notifier }),
+    config.dryRun ? dryRunReverseExecutor(notifier) : liveReverseExecutor({ connection, wallet, config, notifier }),
   );
 
   // Restart recovery (FR-8.7): resume persisted active positions.

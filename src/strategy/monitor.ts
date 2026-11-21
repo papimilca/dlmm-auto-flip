@@ -30,6 +30,24 @@ export interface LevelExecution {
  */
 export type LevelExecutor = (exec: LevelExecution) => Promise<void>;
 
+/** A reverse flip (FR-9): withdraw the quote side and flip back. */
+export interface ReverseExecution {
+  positionAddress: string;
+  poolAddress: string;
+  /** Level being reversed (== the last executed level). */
+  level: number;
+  levelPrice: string | null;
+  thresholdBinId: number | null;
+  pctOfUpper: string | null;
+  currentPrice: string;
+  activeBinId: number;
+  /** Quote-side bin range of the position (holds token Y, FR-9.2). */
+  minBinId: number;
+  maxBinId: number;
+}
+
+export type ReverseExecutor = (exec: ReverseExecution) => Promise<void>;
+
 interface Monitor {
   poolAddress: string;
   sm: CycleStateMachine;
@@ -57,11 +75,13 @@ export class FlipEngine {
     private readonly store: StateStore,
     private readonly notifier: TelegramNotifier,
     private readonly executor: LevelExecutor,
+    private readonly reverseExecutor: ReverseExecutor,
   ) {
     this.params = {
       stepPct: config.stepPct,
       maxSteps: config.maxSteps,
       triggerMode: config.triggerMode,
+      reverseFlipEnabled: config.reverseFlip.enabled,
     };
   }
 
@@ -233,6 +253,59 @@ export class FlipEngine {
       return;
     }
 
+    // REVERSE_LEVEL (FR-9): price recovered past the last executed level —
+    // withdraw the quote side and flip back. Guarded like EXECUTE_LEVEL.
+    if (decision.action === "REVERSE_LEVEL") {
+      if (monitor.sm.currentPhase !== "IDLE") return;
+      const level = decision.level as number;
+      const exec: ReverseExecution = {
+        positionAddress,
+        poolAddress: monitor.poolAddress,
+        level,
+        levelPrice: decision.levelPrice,
+        thresholdBinId: decision.thresholdBinId,
+        pctOfUpper: decision.pctOfUpper,
+        currentPrice,
+        activeBinId: activeBin.binId,
+        minBinId: decision.minBinId as number,
+        maxBinId: decision.maxBinId as number,
+      };
+      const triggerDesc =
+        exec.thresholdBinId !== null
+          ? `bin \`${exec.activeBinId}\` > \`${exec.thresholdBinId}\``
+          : `\`${currentPrice}\` > \`${exec.levelPrice}\``;
+      logAction("reverseFlipTriggered", {
+        positionAddress,
+        level,
+        levelPrice: exec.levelPrice,
+        thresholdBinId: exec.thresholdBinId,
+        triggerMode: this.params.triggerMode,
+        currentPrice,
+        pctOfUpper: exec.pctOfUpper,
+        dryRun: this.config.dryRun,
+      });
+      this.notifier.send(
+        `📈 *Reverse flip level ${level}*\nposition: \`${positionAddress}\`\ntrigger: ${triggerDesc}\nprice: \`${currentPrice}\` (\`${exec.pctOfUpper}%\` of upper bin)`,
+      );
+
+      monitor.sm.transition("TRIGGERED");
+      try {
+        monitor.sm.transition("WITHDRAWING");
+        await this.reverseExecutor(exec);
+        monitor.sm.transition("RE_ADDING");
+        monitor.sm.completeReverse(level); // rollback level (FR-9.4) + reverse guard (FR-9.5)
+        logAction("reverseFlipCompleted", { positionAddress, level });
+      } catch (err: unknown) {
+        logger.error({ err: String(err), positionAddress, level }, "reverseFlipFailed");
+        this.notifier.send(
+          `❌ *Reverse flip level ${level} failed — flip STOPPED (FR-9.6)*\nposition: \`${positionAddress}\`\n\`${String(err)}\``,
+        );
+        monitor.sm.transition("IDLE"); // release lock; reverse not applied
+        this.deactivate(positionAddress);
+      }
+      return;
+    }
+
     // EXECUTE_LEVEL — guarded by the state machine (FR-5.2).
     if (monitor.sm.currentPhase !== "IDLE") return;
     const exec: LevelExecution = {
@@ -271,6 +344,8 @@ export class FlipEngine {
       await this.executor(exec);
       monitor.sm.transition("RE_ADDING");
       monitor.sm.completeLevel(exec.level);
+      // Level re-executed after a reverse → the reverse guard may arm again (FR-9.5).
+      monitor.sm.clearReverseGuard();
       logAction("levelCompleted", { positionAddress, level: exec.level });
     } catch (err: unknown) {
       logger.error({ err: String(err), positionAddress, level: exec.level }, "levelExecutionFailed");

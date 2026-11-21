@@ -13,6 +13,12 @@ export interface PositionState {
   executedLevels: number[];
   /** True while a withdraw+re-add cycle is in flight (FR-5.2). */
   lock: boolean;
+  /**
+   * Level last reversed by the adaptive loop (FR-9.5 idempotency guard):
+   * a level may not be reversed twice without re-triggering in between.
+   * 0 = no reverse executed yet.
+   */
+  lastReversedLevel: number;
 }
 
 /**
@@ -40,7 +46,8 @@ function isValid(v: unknown): v is StateFile {
         typeof p.upperBinId === "number" &&
         typeof p.upperBinPrice === "string" &&
         typeof p.lastLevel === "number" &&
-        Array.isArray(p.executedLevels),
+        Array.isArray(p.executedLevels) &&
+        (typeof p.lastReversedLevel === "number" || p.lastReversedLevel === undefined),
     )
   );
 }
@@ -107,9 +114,11 @@ export class StateStore {
   getPositionState(positionAddress: string): PositionState {
     let s = this.state.positions[positionAddress];
     if (!s) {
-      s = { upperBinId: 0, upperBinPrice: "0", lastLevel: 0, executedLevels: [], lock: false };
+      // Backwards compat: old state files lack lastReversedLevel (FR-9.5).
+      s = { upperBinId: 0, upperBinPrice: "0", lastLevel: 0, executedLevels: [], lock: false, lastReversedLevel: 0 };
       this.state.positions[positionAddress] = s;
     }
+    if (s.lastReversedLevel === undefined) s.lastReversedLevel = 0;
     return s;
   }
 

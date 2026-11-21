@@ -34,6 +34,9 @@ const config: AppConfig = {
   pollIntervalMs: 500,
   txMaxRetries: 3,
   telegramPollTimeoutSec: 30,
+  // maxSteps alert tests only — reverse flip disabled to keep the scenario
+  // isolated from the adaptive loop (reverse has its own tests).
+  reverseFlip: { enabled: false, strategy: "bidask", hybridBidAskPct: 50 },
 };
 
 // binPct mode: stepBins = floor((1000-800)*20/100) = 40 → deepest = 1000-40*5 = 800
@@ -80,6 +83,7 @@ describe("FlipEngine maxSteps alert (FR-6.2, alert once per episode)", () => {
           lastLevel: 5,
           executedLevels: [1, 2, 3, 4, 5],
           lock: false,
+          lastReversedLevel: 0,
         },
       },
     });
@@ -94,6 +98,7 @@ describe("FlipEngine maxSteps alert (FR-6.2, alert once per episode)", () => {
       store,
       notifier,
       executor,
+      vi.fn(),
     );
     await engine.activate(POSITION);
 
@@ -119,6 +124,7 @@ describe("FlipEngine maxSteps alert (FR-6.2, alert once per episode)", () => {
           lastLevel: 5,
           executedLevels: [1, 2, 3, 4, 5],
           lock: false,
+          lastReversedLevel: 0,
         },
       },
     });
@@ -130,6 +136,7 @@ describe("FlipEngine maxSteps alert (FR-6.2, alert once per episode)", () => {
       config,
       store,
       notifier,
+      vi.fn(),
       vi.fn(),
     );
     await engine.activate(POSITION);
@@ -151,6 +158,80 @@ describe("FlipEngine maxSteps alert (FR-6.2, alert once per episode)", () => {
     await vi.advanceTimersByTimeAsync(600);
     expect(sendSpy).toHaveBeenCalledTimes(2);
     expect(sendSpy.mock.calls[1]?.[0]).toContain("maxSteps exceeded");
+
+    engine.stopAll();
+  });
+});
+
+describe("FlipEngine reverse flip (FR-9 adaptive loop)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mocks.listWalletPositions.mockResolvedValue([walletPosition()]);
+    mocks.getActiveBin.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("executes a level, then reverses it when the price recovers past its threshold", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ba_flip_test_"));
+    const store = new StateStore(join(dir, "state.json"), {
+      activePositions: [],
+      positions: {
+        [POSITION]: {
+          upperBinId: 1000,
+          upperBinPrice: UPPER_BIN_PRICE,
+          lastLevel: 0,
+          executedLevels: [],
+          lock: false,
+          lastReversedLevel: 0,
+        },
+      },
+    });
+    const notifier = new TelegramNotifier();
+    const executor: LevelExecutor = vi.fn();
+    const reverseExecutor = vi.fn();
+    const engine = new FlipEngine(
+      new Connection("http://localhost:8899"),
+      new Keypair(),
+      { ...config, reverseFlip: { enabled: true, strategy: "bidask", hybridBidAskPct: 50 } },
+      store,
+      notifier,
+      executor,
+      reverseExecutor,
+    );
+    await engine.activate(POSITION);
+
+    // Level 1 trigger: active bin 960 ≤ threshold 960.
+    mocks.getActiveBin.mockResolvedValue({ binId: 960, pricePerToken: "0.000008" });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(executor).toHaveBeenCalledTimes(1);
+
+    // Recovery: active bin 970 > threshold 960 → reverse level 1.
+    mocks.getActiveBin.mockResolvedValue({ binId: 970, pricePerToken: "0.000009" });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(reverseExecutor).toHaveBeenCalledTimes(1);
+    const revArg = (reverseExecutor as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(revArg.level).toBe(1);
+    expect(revArg.minBinId).toBe(800);
+    expect(revArg.maxBinId).toBe(970);
+    // State rolled back: level 1 is triggerable again (FR-9.4).
+    expect(store.getPositionState(POSITION).lastLevel).toBe(0);
+    expect(store.getPositionState(POSITION).executedLevels).toEqual([]);
+    expect(store.getPositionState(POSITION).lastReversedLevel).toBe(1);
+
+    // Stay recovered: no second reverse for the same episode (FR-9.5).
+    await vi.advanceTimersByTimeAsync(600);
+    expect(reverseExecutor).toHaveBeenCalledTimes(1);
+
+    // Drop again to level 1 → executor re-runs level 1 (adaptive loop).
+    mocks.getActiveBin.mockResolvedValue({ binId: 960, pricePerToken: "0.000008" });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(executor).toHaveBeenCalledTimes(2);
+    expect(store.getPositionState(POSITION).lastLevel).toBe(1);
+    expect(store.getPositionState(POSITION).lastReversedLevel).toBe(0);
 
     engine.stopAll();
   });

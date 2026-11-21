@@ -91,3 +91,50 @@ export function evaluateLevelByBin(
   }
   return null;
 }
+
+// ---- Reverse flip (FR-9, adaptive loop) ------------------------------------
+
+export interface ReverseReached {
+  /** Level being reversed (== current lastLevel). */
+  level: number;
+  /** Threshold of that level (bin ID or price depending on mode). */
+  thresholdBinId?: number;
+  levelPrice?: string;
+}
+
+/**
+ * pricePct mode: the reverse of `lastLevel` triggers when the price has
+ * recovered STRICTLY ABOVE that level's threshold (FR-9.1).
+ */
+export function evaluateReverse(
+  currentPrice: string,
+  upperBinPrice: string,
+  stepPct: number,
+  lastLevel: number,
+): ReverseReached | null {
+  if (lastLevel < 1) return null;
+  const threshold = levelPrice(upperBinPrice, stepPct, lastLevel);
+  if (new Decimal(currentPrice).greaterThan(threshold)) {
+    return { level: lastLevel, levelPrice: threshold };
+  }
+  return null;
+}
+
+/**
+ * binPct mode: the reverse of `lastLevel` triggers when the active bin is
+ * STRICTLY ABOVE that level's threshold bin (FR-9.1).
+ */
+export function evaluateReverseByBin(
+  activeBinId: number,
+  lowerBinId: number,
+  upperBinId: number,
+  stepPct: number,
+  lastLevel: number,
+): ReverseReached | null {
+  if (lastLevel < 1) return null;
+  const threshold = levelBinId(upperBinId, stepBinCount(lowerBinId, upperBinId, stepPct), lastLevel);
+  if (activeBinId > threshold) {
+    return { level: lastLevel, thresholdBinId: threshold };
+  }
+  return null;
+}

@@ -2,6 +2,8 @@ import { Decimal } from "decimal.js";
 import {
   evaluateLevel,
   evaluateLevelByBin,
+  evaluateReverse,
+  evaluateReverseByBin,
   levelBinId,
   levelPrice,
   stepBinCount,
@@ -11,7 +13,7 @@ import type { TriggerMode } from "../config/schema.js";
 import { CycleStateMachine } from "./cycle.js";
 
 export interface StrategyDecision {
-  action: "MONITOR" | "EXECUTE_LEVEL" | "MAX_STEPS_EXCEEDED";
+  action: "MONITOR" | "EXECUTE_LEVEL" | "MAX_STEPS_EXCEEDED" | "REVERSE_LEVEL";
   level: number | null;
   /** pricePct mode: trigger price of the level; null in binPct mode. */
   levelPrice: string | null;
@@ -28,11 +30,15 @@ export interface StrategyParams {
   stepPct: number;
   maxSteps: number;
   triggerMode: TriggerMode;
+  /** Adaptive loop enabled (FR-9). */
+  reverseFlipEnabled: boolean;
 }
 
 /**
- * Decide what to do for one price tick (pure; FR-3.2, FR-6.2).
+ * Decide what to do for one price tick (pure; FR-3.2, FR-6.2, FR-9.1).
  * - EXECUTE_LEVEL: next level touched/passed and not yet executed.
+ * - REVERSE_LEVEL: price/bin recovered strictly above the last executed
+ *   level's threshold → withdraw quote side & flip back (FR-9).
  * - MAX_STEPS_EXCEEDED: price/bin beyond the last allowed level → alert only.
  * - MONITOR: nothing to do.
  *
@@ -70,6 +76,23 @@ export function decide(
         maxBinId: upperBinId,
       };
     }
+    // Reverse flip: active bin recovered above the last executed level's
+    // threshold and not already reversed in this episode (FR-9.1/FR-9.5).
+    if (params.reverseFlipEnabled) {
+      const rev = evaluateReverseByBin(activeBinId, lowerBinId, upperBinId, params.stepPct, sm.lastLevel);
+      if (rev && rev.level !== sm.lastReversedLevel) {
+        return {
+          action: "REVERSE_LEVEL",
+          level: rev.level,
+          levelPrice: null,
+          pctOfUpper: pctOf(currentPrice, upperBinPrice),
+          thresholdBinId: rev.thresholdBinId ?? null,
+          // Quote-side range of the position (bins at/below active hold Y, FR-9.2).
+          minBinId: lowerBinId,
+          maxBinId: Math.min(activeBinId, upperBinId),
+        };
+      }
+    }
     // Beyond maxSteps: active bin below the deepest allowed threshold → alert (FR-6.2).
     if (sm.lastLevel >= params.maxSteps) {
       const deepest = levelBinId(
@@ -104,6 +127,22 @@ export function decide(
       minBinId: Math.max(activeBinId + 1, lowerBinId),
       maxBinId: upperBinId,
     };
+  }
+
+  // Reverse flip (pricePct mode, FR-9.1/FR-9.5).
+  if (params.reverseFlipEnabled) {
+    const rev = evaluateReverse(currentPrice, upperBinPrice, params.stepPct, sm.lastLevel);
+    if (rev && rev.level !== sm.lastReversedLevel) {
+      return {
+        action: "REVERSE_LEVEL",
+        level: rev.level,
+        levelPrice: rev.levelPrice ?? null,
+        pctOfUpper: pctOf(currentPrice, upperBinPrice),
+        thresholdBinId: null,
+        minBinId: lowerBinId,
+        maxBinId: Math.min(activeBinId, upperBinId),
+      };
+    }
   }
 
   // Beyond maxSteps: price below the deepest allowed level → alert (FR-6.2).

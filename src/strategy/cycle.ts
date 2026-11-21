@@ -33,6 +33,11 @@ export class CycleStateMachine {
     return this.state.executedLevels;
   }
 
+  /** FR-9.5: last level reversed by the adaptive loop (0 = none). */
+  get lastReversedLevel(): number {
+    return this.state.lastReversedLevel ?? 0;
+  }
+
   getUpperBinPrice(): string {
     return this.state.upperBinPrice;
   }
@@ -62,6 +67,29 @@ export class CycleStateMachine {
     this.state.lastLevel = Math.max(this.state.lastLevel, level);
     this.transition("DONE");
     this.transition("IDLE");
+  }
+
+  /**
+   * Complete a reverse flip (FR-9.4): roll the level back — the reversed
+   * level is removed from executedLevels, lastLevel decremented (so the same
+   * level can trigger again), and lastReversedLevel set as the idempotency
+   * guard (FR-9.5) until the level re-triggers.
+   */
+  completeReverse(level: number): void {
+    this.state.executedLevels = this.state.executedLevels.filter((l) => l !== level);
+    this.state.lastLevel = Math.max(this.state.lastLevel - 1, 0);
+    this.state.lastReversedLevel = level;
+    this.store.persist();
+    this.transition("DONE");
+    this.transition("IDLE");
+  }
+
+  /** A level re-triggered after a reverse clears the reverse guard (FR-9.5). */
+  clearReverseGuard(): void {
+    if (this.state.lastReversedLevel !== 0) {
+      this.state.lastReversedLevel = 0;
+      this.store.persist();
+    }
   }
 
   private setLock(lock: boolean): void {

@@ -6,5 +6,10 @@
   "dryRun": true,
   "pollIntervalMs": 5000,
   "txMaxRetries": 3,
-  "telegramPollTimeoutSec": 30
+  "telegramPollTimeoutSec": 30,
+  "reverseFlip": {
+    "enabled": true,
+    "strategy": "bidask",
+    "hybridBidAskPct": 50
+  }
 }

@@ -99,3 +99,15 @@ export function baseTokenRemaining(d: PositionData, activeBinId: number): string
     .reduce((acc, b) => acc.add(new BN(b.positionXAmount)), new BN(0));
   return total.toString();
 }
+
+/**
+ * Sum of quote (Y) token still held by the position in bins at/below the
+ * active bin (those bins hold only token Y — research T-0.4). Decimal string.
+ * Used by the reverse flip (FR-9.2).
+ */
+export function quoteTokenRemaining(d: PositionData, activeBinId: number): string {
+  const total = d.positionBinData
+    .filter((b) => b.binId <= activeBinId)
+    .reduce((acc, b) => acc.add(new BN(b.positionYAmount)), new BN(0));
+  return total.toString();
+}

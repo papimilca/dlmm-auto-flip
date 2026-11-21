@@ -5,6 +5,7 @@
 > Changelog: v0.3 — tambah **FR-7 notifikasi Telegram** (Bot API via fetch, env-based, non-blocking).
 > Changelog: v0.4 — **perubahan arsitektur besar**: kontrol via **Telegram command** (`/position` → daftar posisi wallet + button *Activate Flip*, `/stop`, `/status`); posisi di-discover dari **wallet** (bukan config), monitoring **multi-posisi paralel** per posisi yang di-activate; `poolAddress`/`positionAddress` dihapus dari config.
 > Changelog: v0.5 — tambah config `triggerMode` (`pricePct` default | `binPct`): mode **binPct** menentukan step sebagai persentase dari **lebar bin posisi** (`stepBins = floor(width × |stepPct| / 100)`), trigger dievaluasi pada bin ID (integer) — menjawab Q-11.
+> Changelog: v0.6 — tambah **FR-9 reverse flip (loop adaptif)**: saat harga pulih kembali melewati threshold level yang sudah dieksekusi, withdraw sisi quote (Y) dari bin posisi, lalu re-add ke posisi yang sama dengan strategi `bidask` atau `hybrid` (50% bid-ask Y / 50% spot) — menjawab Q-12.
 
 ---
 
@@ -123,6 +124,20 @@ Tools ini dibuat untuk memitigasi risiko tersebut secara otomatis:
 - FR-8.7 Daftar posisi aktif + state per posisi persist di state file; setelah restart, monitoring posisi aktif dilanjutkan otomatis (NFR-1) setelah validasi posisi di chain.
 - FR-8.8 Toggle bersifat **idempotent**: activate posisi yang sudah aktif (atau sebaliknya) tidak memicu efek ganda; guard double-execution (FR-5.2) berlaku per posisi.
 
+### FR-9 Reverse Flip (Loop Adaptif, v0.6)
+> Konsep loop: level dapat dieksekusi bolak-balik (1 → 2 → 1 → 2 → 3 → 2 → ...) selama flip aktif, agar fee tetap maksimal saat harga bergerak naik-turun di antara level.
+
+- FR-9.1 Trigger reverse: saat harga/active bin **pulih melewati** threshold level `lastLevel` (level tertinggi yang sudah dieksekusi) — yaitu `activeBinId > thresholdBin(lastLevel)` (mode binPct) atau `currentPrice > levelPrice(lastLevel)` (mode pricePct) — dan `lastLevel ≥ 1`, eksekusi **reverse flip level lastLevel**.
+- FR-9.2 Reverse flip: **withdraw seluruh sisi quote (Y)** dari posisi (bin `lowerBinId` s/d `min(activeBinId−1, upperBinId)`; bin di bawah active bin memegang Y), lalu **re-add** ke posisi yang sama.
+- FR-9.3 Strategi re-add (`reverseFlip.strategy`):
+  - `bidask` (default): seluruh Y di-add via `StrategyType.BidAsk`, single-sided Y, pada rentang bin sisi quote posisi.
+  - `hybrid`: 50% Y di-add bid-ask single-sided Y, 50% di-add via `StrategyType.Spot` pada rentang quote (bin sisi quote + bin yang memuat active bin) — memungkinkan Y berkonversi ke X saat harga turun lagi.
+- FR-9.4 **Rollback level**: setelah reverse flip sukses, `lastLevel` dikurangi 1 (level N selesai direverse → sistem kembali "siap trigger level N lagi"). Level yang sudah di-reverse dihapus dari `executedLevels` sehingga level yang sama bisa dieksekusi ulang (idempotency per-episode, bukan per-lifetime).
+- FR-9.5 Reverse flip bersifat **idempotent per episode**: reverse untuk level N hanya boleh dieksekusi sekali sampai level N ter-trigger lagi (guard: `lastReversedLevel`).
+- FR-9.6 Guard & safety yang sama berlaku (FR-5.2): lock state machine, `dryRun`, retry, slippage, cek balance minimum; gagal total → stop siklus posisi.
+- FR-9.7 Konfigurasi: `reverseFlip.enabled` (default `true`), `reverseFlip.strategy` (`"bidask"` default | `"hybrid"`), `reverseFlip.hybridBidAskPct` (default `50`).
+- FR-9.8 Setiap reverse flip dicatat di log JSONL + notif Telegram (event `reverseFlipTriggered`/`reverseWithdrawSuccess`/`reverseReAddSuccess`, tx signature).
+
 ---
 
 ## 6. Non-Functional Requirements
@@ -213,6 +228,7 @@ Tools ini dibuat untuk memitigasi risiko tersebut secara otomatis:
 | Q-9 | ~~Kontrol tambahan selain /position?~~ | ✅ **TERJAWAB (2026-11-20):** `/stop` (deactivate semua) + `/status` (ringkasan level per posisi) + button toggle activate/deactivate per posisi; whitelist chat via `TELEGRAM_CHAT_ID` (v0.4) |
 | Q-10 | ~~Re-add: ke posisi lama (rentang bin existing) atau posisi baru dengan `addLiquidityByStrategy(BidAsk)`?~~ | ✅ **TERJAWAB (2026-11-20):** **Posisi lama (a)** — base token di-add kembali ke position address yang sama, pada bin sisi base milik posisi (`activeBinId+1` s/d `upperBinId`); tidak ada posisi baru; `bidAskBinRange` dihapus dari config |
 | Q-11 | ~~Step fixed dari harga upper bin atau persentase dari lebar bin posisi?~~ | ✅ **TERJAWAB (2026-11-20):** Ditambah config `triggerMode`: **`pricePct`** (default, perilaku lama FR-3.1) atau **`binPct`** — step = persentase dari jumlah bin posisi, trigger per bin ID (FR-3.1b, PRD v0.5) |
+| Q-12 | Reverse flip: strategi re-add saat harga naik kembali? | ✅ **TERJAWAB (2026-11-22):** config `reverseFlip.enabled` (default true) + `reverseFlip.strategy` (`bidask` \| `hybrid`, default `bidask`); hybrid = 50% bid-ask single-sided Y, 50% spot (FR-9, PRD v0.6) |
 | Q-7 | ~~Withdraw seluruh vs sebagian sisa base per level?~~ | ✅ **TERJAWAB (2026-11-20):** **Seluruh sisa base token** di posisi per level |
 
 ---

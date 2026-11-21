@@ -2,7 +2,7 @@ import { BN } from "bn.js";
 import type { PublicKey, Transaction } from "@solana/web3.js";
 import type DLMM from "@meteora-ag/dlmm";
 import { toPubkey } from "../utils/solana.js";
-import { baseTokenRemaining } from "../dlmm/position.js";
+import { baseTokenRemaining, quoteTokenRemaining } from "../dlmm/position.js";
 
 export interface WithdrawPlan {
   txs: Transaction[];
@@ -43,4 +43,33 @@ export async function planWithdrawBase(
     shouldClaimAndClose: false,
   });
   return { txs, baseAmountX, fromBinId, toBinId: d.upperBinId, lowerBinId: d.lowerBinId, upperBinId: d.upperBinId };
+}
+
+/**
+ * Reverse flip (FR-9.2): plan the quote-side withdraw — remove 100% of the
+ * position's liquidity in the bins holding token Y (at/below the active bin),
+ * range lowerBinId..min(activeBinId, upperBinId). Returns null when there is
+ * no quote-side liquidity.
+ */
+export async function planWithdrawQuote(
+  pool: DLMM,
+  positionAddress: string,
+  user: PublicKey,
+  activeBinId: number,
+): Promise<(Omit<WithdrawPlan, "baseAmountX"> & { quoteAmountY: string }) | null> {
+  const position = await pool.getPosition(toPubkey(positionAddress, "position"));
+  const d = position.positionData;
+  const toBinId = Math.min(activeBinId, d.upperBinId);
+  if (d.lowerBinId > toBinId) return null;
+  const quoteAmountY = quoteTokenRemaining(d, activeBinId);
+  if (new BN(quoteAmountY).isZero()) return null;
+  const txs = await pool.removeLiquidity({
+    user,
+    position: position.publicKey,
+    fromBinId: d.lowerBinId,
+    toBinId,
+    bps: new BN(10_000), // 100% — withdraw ALL remaining quote side (FR-9.2)
+    shouldClaimAndClose: false,
+  });
+  return { txs, quoteAmountY, fromBinId: d.lowerBinId, toBinId, lowerBinId: d.lowerBinId, upperBinId: d.upperBinId };
 }

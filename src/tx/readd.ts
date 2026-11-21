@@ -47,3 +47,72 @@ export async function planReAddBase(
     slippage,
   });
 }
+
+/**
+ * Reverse flip re-add (FR-9.3): put the withdrawn quote (Y) token back into
+ * the SAME position, single-sided Y, over the quote-side bins the position
+ * owns (minBinId..maxBinId — both at/below the active bin).
+ */
+export async function planReAddQuoteBidAsk(
+  pool: DLMM,
+  positionAddress: string,
+  user: PublicKey,
+  quoteAmountY: BNType,
+  minBinId: number,
+  maxBinId: number,
+  slippageBps: number,
+): Promise<Transaction> {
+  const configPct = slippageBps / 100;
+  const binStepPct = pool.lbPair.binStep / 100;
+  const slippage = Math.max(configPct, MIN_BIN_SLIPPAGE_COVERAGE * binStepPct);
+  return pool.addLiquidityByStrategy({
+    positionPubKey: toPubkey(positionAddress, "position"),
+    totalXAmount: new BN(0),
+    totalYAmount: quoteAmountY,
+    strategy: {
+      minBinId,
+      maxBinId,
+      // Range strictly below the active bin + singleSidedX unset → SDK takes
+      // the depositOnlyY path (verified in SDK buildLiquidityStrategyParameters).
+      strategyType: loadSdkModule().StrategyType.BidAsk,
+    },
+    user,
+    slippage,
+  });
+}
+
+/**
+ * Hybrid strategy (FR-9.3): the Y amount is added over a range that spans the
+ * quote side AND the active bin via StrategyType.Spot — Y placed on the quote
+ * side can convert to X when the price drops again. StrategyParameters only
+ * has a single range, so the spot range covers the quote side plus the
+ * active bin (minBinId..min(maxBinId + 1, positionUpperBinId)); the SDK
+ * distributes amounts automatically per strategy type.
+ */
+export async function planReAddQuoteSpot(
+  pool: DLMM,
+  positionAddress: string,
+  user: PublicKey,
+  quoteAmountY: BNType,
+  minBinId: number,
+  maxBinId: number,
+  positionUpperBinId: number,
+  slippageBps: number,
+): Promise<Transaction> {
+  const configPct = slippageBps / 100;
+  const binStepPct = pool.lbPair.binStep / 100;
+  const slippage = Math.max(configPct, MIN_BIN_SLIPPAGE_COVERAGE * binStepPct);
+  const spotMaxBinId = Math.min(maxBinId + 1, positionUpperBinId);
+  return pool.addLiquidityByStrategy({
+    positionPubKey: toPubkey(positionAddress, "position"),
+    totalXAmount: new BN(0),
+    totalYAmount: quoteAmountY,
+    strategy: {
+      minBinId,
+      maxBinId: spotMaxBinId,
+      strategyType: loadSdkModule().StrategyType.Spot,
+    },
+    user,
+    slippage,
+  });
+}

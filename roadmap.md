@@ -155,6 +155,31 @@
 
 ---
 
+## Fase 7 — Reverse Flip / Loop Adaptif (PRD v0.6, FR-9)
+
+> Fitur user (2026-11-22): saat harga pulih melewati threshold level yang sudah dieksekusi, withdraw sisi quote (Y) → re-add ke posisi sama (bidask/hybrid), level di-rollback sehingga flip bisa loop 1→2→1→2→3→2 dst.
+
+| ID | Task | Detail | Status | Catatan |
+|----|------|--------|--------|---------|
+| T-7.1 | ✅ Desain & dokumen | PRD v0.6: FR-9 (trigger reverse, strategi re-add bidask/hybrid, rollback level, guard per episode, config) + Q-12 terjawab | ✅ done | |
+| T-7.2 | ✅ Config reverse flip | `reverseFlip: { enabled, strategy (bidask\|hybrid), hybridBidAskPct }` di zod schema + config.example.json | ✅ done | backwards-compat state file |
+| T-7.3 | ✅ Pure logic reverse | `evaluateReverse`/`evaluateReverseByBin` (strict recovery di atas threshold lastLevel); branch `REVERSE_LEVEL` di `decide()` (kedua triggerMode) | ✅ done | unit test reverse.test.ts |
+| T-7.4 | ✅ State machine + persist | `lastReversedLevel` di PositionState (migrasi otomatis state lama); `completeReverse` (rollback level + guard) + `clearReverseGuard` saat level re-trigger | ✅ done | |
+| T-7.5 | ✅ Engine monitor | Handle `REVERSE_LEVEL` di `FlipEngine.tick()` (lock, notif, log, rollback, stop-on-fail); `ReverseExecutor` pluggable (dry-run + live) | ✅ done | |
+| T-7.6 | ✅ Live reverse executor | `planWithdrawQuote` (removeLiquidity 100% sisi quote, refetch + cap balance, skip aman), re-add `planReAddQuoteBidAsk` (single-sided Y) / hybrid `planReAddQuoteSpot` (Spot via rentang quote + active bin) | ✅ done | SDK: depositOnlyY path via range di bawah active bin |
+| T-7.7 | ✅ Unit test | 17 test baru: evaluator reverse (bin/price), decide branch, guard FR-9.5, rollback FR-9.4, engine loop penuh (trigger→reverse→re-trigger) | ✅ done | total 98 test lulus |
+| T-7.8 | Uji devnet reverse flip | Jalankan siklus: level trigger → simulasi rebound → verifikasi withdraw Y + re-add + rollback state + loop berulang | ⬜ pending | gabung dengan T-4.6 |
+
+### Checklist Fase 7
+- [x] Reverse trigger teruji unit (bin & price mode, strict boundary)
+- [x] Guard double-reverse per episode (FR-9.5)
+- [x] Rollback level + re-trigger level yang sama (FR-9.4)
+- [x] dryRun: reverse executor hanya log/notif, tanpa tx
+- [x] Live path: withdraw quote + re-add bidask/hybrid (mock SDK)
+- [ ] Devnet end-to-end reverse flip (T-7.8)
+
+---
+
 ## Log Perubahan
 
 > Format: `YYYY-MM-DD | Task ID | File yang diubah | Ringkasan perubahan`
@@ -180,3 +205,4 @@
 | 2026-11-20 | T-4.1, T-4.2 | src/tx/live.ts, src/tx/readd.ts, tests/tx/live.test.ts, tests/tx/readd.test.ts | **Fix (laporan user): re-add gagal error 6004 `ExceededBinSlippageTolerance` pada `AddLiquidityByStrategy2`.** Akar masalah: SDK menghitung toleransi sebagai `ceil(slippagePct / binStepPct)` **bin** — dengan slippage 1% dan binStep kasar, toleransi hanya ~1 bin, dan active bin bergeser saat harga turun cepat / setelah withdraw. Fix: (1) `pool.refetchStates()` sebelum build tx re-add agar `activeId` segar; (2) slippage efektif diperlebar hingga menutup minimal 10 bin pergerakan active bin (`MIN_BIN_SLIPPAGE_COVERAGE`), tetap ≥ slippage config. Test mock diupdate; 73 test lulus, build sukses |
 | 2026-11-20 | T-4.2 | src/tx/live.ts, src/tx/withdraw.ts, tests/tx/live.test.ts | **Fix (kronologi user, lanjutan Level 8): saat re-add harga sudah rebounce melewati range yang di-withdraw.** Range re-add sebelumnya dipakai mentah dari plan withdraw (`max(activeBin+1, lowerBinId)..upperBinId`) — jika active bin sudah naik kembali, bin tersebut tidak lagi berada di atas active bin (bin ≤ active memegang token Y), sehingga `addLiquidityByStrategy singleSidedX` gagal token `insufficient funds` di setiap retry. Fix: setelah `refetchStates()`, **recompute range re-add dari active bin fresh** (`max(freshActiveBin+1, position.lowerBinId)..upperBinId`, `lowerBinId`/`upperBinId` posisi kini disimpan di `WithdrawPlan`); bila harga rebound hingga `freshActiveBin+1 > upperBinId` → skip re-add aman (`reAddSkippedPriceRebounded`, X tetap di wallet) + notif Telegram. 2 test baru (total 81) lulus, build sukses |
 | 2026-11-20 | T-4.2 | src/tx/live.ts, src/utils/solana.ts, tests/tx/live.test.ts, tests/utils/solana.test.ts | **Fix (laporan user): Level 8 gagal — flip STOPPED, `Error processing Instruction 2: custom program error: 0x1` (token `TransferChecked: insufficient funds`).** Akar masalah: re-add memakai `baseAmountX` hasil estimasi data posisi **sebelum** withdraw, sedangkan `removeLiquidity(bps 10000)` bisa menghasilkan X nyata sedikit lebih kecil (pembulatan per-bin menyisakan residu) → `TransferChecked` dari ATA wallet gagal insufficient funds dan semua retry gagal (tx statis). Fix: setelah withdraw terkonfirmasi, baca saldo X ATA wallet nyata (`getWalletTokenBalance`, u64 LE offset 64, ambil akun terbesar, 0 jika tidak ada) dan **cap** jumlah re-add ke `min(requested, balance)`; log + notif `reAddAmountCapped` bila terpotong, skip aman bila saldo 0 (`reAddSkippedNoBalance`). 6 test baru (total 79) lulus, build sukses |
+| 2026-11-22 | T-7.1–T-7.7 | PRD.md, roadmap.md, config.example.json, src/config/schema.ts, src/strategy/engine.ts, src/strategy/decide.ts, src/strategy/cycle.ts, src/strategy/monitor.ts, src/state/persistence.ts, src/dlmm/position.ts, src/tx/withdraw.ts, src/tx/readd.ts, src/tx/live.ts, src/index.ts, tests/strategy/ (reverse/monitor) | **Fitur reverse flip / loop adaptif (PRD v0.6, FR-9):** trigger reverse saat harga/active bin pulih **strictly di atas** threshold `lastLevel` (`evaluateReverse`/`evaluateReverseByBin`, kedua triggerMode); withdraw 100% sisi quote (`planWithdrawQuote` range `lowerBinId..min(activeBinId, upperBinId)`) → re-add ke posisi sama: strategi `bidask` (BidAsk single-sided Y) atau `hybrid` (`hybridBidAskPct`% bid-ask Y, sisanya Spot melintasi active bin agar Y bisa konversi balik ke X saat harga turun); **rollback level** (`completeReverse`: lastLevel−1, level dihapus dari executedLevels, guard `lastReversedLevel` per episode FR-9.5, guard di-clear saat level re-trigger) → loop 1→2→1→2→3→2…; config `reverseFlip {enabled, strategy, hybridBidAskPct}`; state lama di-migrasi otomatis; guard live path sama seperti level executor (refetch, cap balance, skip aman, dryRun, stop-on-fail). 17 test baru (total 98) lulus, build sukses |
