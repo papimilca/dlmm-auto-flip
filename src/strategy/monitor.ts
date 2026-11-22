@@ -3,6 +3,7 @@ import type { AppConfig } from "../config/schema.js";
 import type { StateStore } from "../state/persistence.js";
 import { CycleStateMachine } from "./cycle.js";
 import { decide, type StrategyParams, type StrategyDecision } from "./decide.js";
+import { updateSweepStreak, type SweepStreak, type TriggerAction } from "./engine.js";
 import { loadPool } from "../dlmm/pool.js";
 import { listWalletPositions, type WalletPosition } from "../dlmm/position.js";
 import logger, { logAction } from "../logger/index.js";
@@ -56,6 +57,10 @@ interface Monitor {
   upperBinId: number;
   /** maxSteps alert sent once per cycle; reset when a new cycle starts. */
   maxStepsAlerted: boolean;
+  /** Sweep validation streak (FR-10.3, in-memory per monitor). */
+  sweepStreak: SweepStreak | null;
+  /** log sweepPending once per streak (FR-10.4). */
+  sweepPendingLogged: boolean;
 }
 
 /**
@@ -129,6 +134,8 @@ export class FlipEngine {
       lowerBinId: found.lowerBinId,
       upperBinId: found.upperBinId,
       maxStepsAlerted: false,
+      sweepStreak: null,
+      sweepPendingLogged: false,
     };
     this.monitors.set(positionAddress, monitor);
     logAction("flipActivated", {
@@ -232,6 +239,38 @@ export class FlipEngine {
       this.params,
       monitor.sm,
     );
+
+    // Sweep validation (FR-10): a tx-executing trigger must hold N consecutive
+    // polls before executing; any other decision resets the streak (FR-10.2).
+    if (decision.action === "EXECUTE_LEVEL" || decision.action === "REVERSE_LEVEL") {
+      const trigger = {
+        action: decision.action as TriggerAction,
+        level: decision.level as number,
+      };
+      const confirmations = this.config.sweepValidation.confirmations;
+      const { streak, confirmed } = updateSweepStreak(monitor.sweepStreak, trigger, confirmations);
+      // A new (action, level) streak restarts the pending log gate (FR-10.4).
+      if (streak !== null && streak.count === 1) monitor.sweepPendingLogged = false;
+      monitor.sweepStreak = streak;
+      if (!confirmed) {
+        // FR-10.4: log once per streak, no notification spam.
+        if (!monitor.sweepPendingLogged) {
+          monitor.sweepPendingLogged = true;
+          logAction("sweepPending", {
+            positionAddress,
+            action: trigger.action,
+            level: trigger.level,
+            count: streak?.count ?? 0,
+            confirmations,
+          });
+        }
+        return;
+      }
+      monitor.sweepPendingLogged = false;
+    } else {
+      monitor.sweepStreak = null;
+      monitor.sweepPendingLogged = false;
+    }
 
     if (decision.action === "MONITOR") {
       // Price back above the maxSteps limit — allow a fresh alert if it dips again.

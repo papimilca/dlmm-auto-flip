@@ -180,6 +180,27 @@
 
 ---
 
+## Fase 8 — Sweep Validation (PRD v0.7, FR-10)
+
+> Fitur user (2026-11-22): sebelum withdraw, pastikan harga benar-benar berada di level tsb — bukan wick/sweep sesaat.
+
+| ID | Task | Detail | Status | Catatan |
+|----|------|--------|--------|---------|
+| T-8.1 | ✅ Desain & dokumen | PRD v0.7: FR-10 (konfirmasi N poll berturut-turut, reset saat harga kembali, in-memory, log `sweepPending`) | ✅ done | |
+| T-8.2 | ✅ Config | `sweepValidation: { confirmations }` (default 2, min 1; 1 = perilaku lama) di zod schema + config.example.json | ✅ done | backwards-compat default |
+| T-8.3 | ✅ Pure logic | `updateSweepStreak` di engine.ts: streak per pasangan (action, level); decision lain → reset | ✅ done | unit test sweep.test.ts |
+| T-8.4 | ✅ Engine gate | `FlipEngine.tick()`: EXECUTE_LEVEL & REVERSE_LEVEL hanya tereksekusi setelah confirmed; log `sweepPending` sekali per streak; MAX_STEPS_EXCEEDED tidak divalidasi | ✅ done | test engine e2e: sweep 1-tick tidak eksekusi, sustained N tick eksekusi |
+| T-8.5 | Devnet: verifikasi sweep gating | Observasi wick nyata tidak memicu eksekusi | ⬜ pending | gabung T-4.6/T-7.8 |
+
+### Checklist Fase 8
+- [x] Pure streak logic teruji (reset, level/action berubah, confirmations 1/2/3)
+- [x] Gate di kedua jalur (EXECUTE_LEVEL & REVERSE_LEVEL)
+- [x] Log `sweepPending` sekali per streak, tanpa spam notif
+- [x] Default config aman (confirmations 2)
+- [ ] Devnet end-to-end (T-8.5)
+
+---
+
 ## Log Perubahan
 
 > Format: `YYYY-MM-DD | Task ID | File yang diubah | Ringkasan perubahan`
@@ -207,3 +228,4 @@
 | 2026-11-20 | T-4.2 | src/tx/live.ts, src/utils/solana.ts, tests/tx/live.test.ts, tests/utils/solana.test.ts | **Fix (laporan user): Level 8 gagal — flip STOPPED, `Error processing Instruction 2: custom program error: 0x1` (token `TransferChecked: insufficient funds`).** Akar masalah: re-add memakai `baseAmountX` hasil estimasi data posisi **sebelum** withdraw, sedangkan `removeLiquidity(bps 10000)` bisa menghasilkan X nyata sedikit lebih kecil (pembulatan per-bin menyisakan residu) → `TransferChecked` dari ATA wallet gagal insufficient funds dan semua retry gagal (tx statis). Fix: setelah withdraw terkonfirmasi, baca saldo X ATA wallet nyata (`getWalletTokenBalance`, u64 LE offset 64, ambil akun terbesar, 0 jika tidak ada) dan **cap** jumlah re-add ke `min(requested, balance)`; log + notif `reAddAmountCapped` bila terpotong, skip aman bila saldo 0 (`reAddSkippedNoBalance`). 6 test baru (total 79) lulus, build sukses |
 | 2026-11-22 | T-7.1–T-7.7 | PRD.md, roadmap.md, config.example.json, src/config/schema.ts, src/strategy/engine.ts, src/strategy/decide.ts, src/strategy/cycle.ts, src/strategy/monitor.ts, src/state/persistence.ts, src/dlmm/position.ts, src/tx/withdraw.ts, src/tx/readd.ts, src/tx/live.ts, src/index.ts, tests/strategy/ (reverse/monitor) | **Fitur reverse flip / loop adaptif (PRD v0.6, FR-9):** trigger reverse saat harga/active bin pulih **strictly di atas** threshold `lastLevel` (`evaluateReverse`/`evaluateReverseByBin`, kedua triggerMode); withdraw 100% sisi quote (`planWithdrawQuote` range `lowerBinId..min(activeBinId, upperBinId)`) → re-add ke posisi sama: strategi `bidask` (BidAsk single-sided Y) atau `hybrid` (`hybridBidAskPct`% bid-ask Y, sisanya Spot melintasi active bin agar Y bisa konversi balik ke X saat harga turun); **rollback level** (`completeReverse`: lastLevel−1, level dihapus dari executedLevels, guard `lastReversedLevel` per episode FR-9.5, guard di-clear saat level re-trigger) → loop 1→2→1→2→3→2…; config `reverseFlip {enabled, strategy, hybridBidAskPct}`; state lama di-migrasi otomatis; guard live path sama seperti level executor (refetch, cap balance, skip aman, dryRun, stop-on-fail). 17 test baru (total 98) lulus, build sukses |
 | 2026-11-22 | T-7.6 | src/utils/solana.ts, src/tx/live.ts, tests/utils/solana.test.ts, tests/tx/live.test.ts | **Fix (laporan user): reverse flip re-add skipped — "wallet Y balance is 0".** Akar masalah: tokenY pool = **wSOL**; Meteora `removeLiquidity` otomatis **unwrap wSOL → native SOL** (wallet bahkan tidak punya wSOL ATA), sehingga `getWalletTokenBalance` (baca token account) membaca 0 padahal Y sudah masuk sebagai lamports. Fix: helper `getWalletBalanceForMint` — mint wSOL → baca `getBalance` native minus **fee reserve 0.01 SOL**; dipakai di jalur base & reverse executor. 3 test baru (total 101) lulus, build sukses |
+| 2026-11-22 | T-8.1–T-8.4 | PRD.md, roadmap.md, config.example.json, src/config/schema.ts, src/strategy/engine.ts, src/strategy/monitor.ts, tests/strategy/sweep.test.ts, tests/strategy/monitor.test.ts | **Fitur sweep validation (PRD v0.7, FR-10):** trigger (EXECUTE_LEVEL & REVERSE_LEVEL) hanya dieksekusi setelah keputusan (action, level) sama bertahan **N poll berturut-turut** (`sweepValidation.confirmations`, default 2; 1 = perilaku lama) — wick/sweep sesaat yang kembali di tick berikutnya mereset streak dan tidak memicu tx. Pure logic `updateSweepStreak` + gate di `FlipEngine.tick()`; log `sweepPending` sekali per streak (tanpa spam notif); streak in-memory (restart hanya menunda maksimal N−1 tick); MAX_STEPS_EXCEEDED tidak divalidasi (alert-only). 10 test baru (total 111) lulus, build sukses |

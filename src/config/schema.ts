@@ -18,6 +18,18 @@ export const reverseFlipSchema = z
   .default({ enabled: true, strategy: "bidask", hybridBidAskPct: 50 });
 export type ReverseFlipConfig = z.infer<typeof reverseFlipSchema>;
 
+/**
+ * Sweep validation (FR-10): a trigger decision must persist N consecutive
+ * polls before executing, so a momentary wick through the level does not
+ * fire a withdraw/re-add. 1 = legacy behavior (no validation).
+ */
+export const sweepValidationSchema = z
+  .strictObject({
+    confirmations: z.number().int().min(1).default(2),
+  })
+  .default({ confirmations: 2 });
+export type SweepValidationConfig = z.infer<typeof sweepValidationSchema>;
+
 export const configSchema = z.strictObject({
   stepPct: z.number().negative().default(-20),
   /**
@@ -35,6 +47,8 @@ export const configSchema = z.strictObject({
   telegramPollTimeoutSec: z.number().int().min(5).max(50).default(30),
   /** Adaptive loop: flip back when price recovers past an executed level (FR-9). */
   reverseFlip: reverseFlipSchema,
+  /** Reject momentary sweeps: trigger must hold N consecutive polls (FR-10). */
+  sweepValidation: sweepValidationSchema,
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

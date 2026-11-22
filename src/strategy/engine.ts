@@ -138,3 +138,43 @@ export function evaluateReverseByBin(
   }
   return null;
 }
+
+// ---- Sweep validation (FR-10) ----------------------------------------------
+
+/** Actions subject to sweep validation (tx-executing decisions only). */
+export type TriggerAction = "EXECUTE_LEVEL" | "REVERSE_LEVEL";
+
+/**
+ * Consecutive-poll confirmation state for one position monitor (FR-10.3:
+ * in-memory, not persisted).
+ */
+export interface SweepStreak {
+  action: TriggerAction;
+  level: number;
+  count: number;
+}
+
+export interface SweepUpdate {
+  /** Updated streak state (null = cleared). */
+  streak: SweepStreak | null;
+  /** True when the trigger is confirmed and may execute (FR-10.1). */
+  confirmed: boolean;
+}
+
+/**
+ * Advance the sweep-validation streak with one tick's decision (FR-10.1/10.2).
+ * Pure — the caller owns the streak. `decision` is null when this tick
+ * produced no tx-executing action (MONITOR / MAX_STEPS_EXCEEDED resets).
+ */
+export function updateSweepStreak(
+  streak: SweepStreak | null,
+  decision: { action: TriggerAction; level: number } | null,
+  confirmations: number,
+): SweepUpdate {
+  if (!decision) return { streak: null, confirmed: false };
+  const same =
+    streak !== null && streak.action === decision.action && streak.level === decision.level;
+  const count = same ? streak.count + 1 : 1;
+  const next: SweepStreak = { action: decision.action, level: decision.level, count };
+  return { streak: next, confirmed: count >= confirmations };
+}

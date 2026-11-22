@@ -6,6 +6,7 @@
 > Changelog: v0.4 — **perubahan arsitektur besar**: kontrol via **Telegram command** (`/position` → daftar posisi wallet + button *Activate Flip*, `/stop`, `/status`); posisi di-discover dari **wallet** (bukan config), monitoring **multi-posisi paralel** per posisi yang di-activate; `poolAddress`/`positionAddress` dihapus dari config.
 > Changelog: v0.5 — tambah config `triggerMode` (`pricePct` default | `binPct`): mode **binPct** menentukan step sebagai persentase dari **lebar bin posisi** (`stepBins = floor(width × |stepPct| / 100)`), trigger dievaluasi pada bin ID (integer) — menjawab Q-11.
 > Changelog: v0.6 — tambah **FR-9 reverse flip (loop adaptif)**: saat harga pulih kembali melewati threshold level yang sudah dieksekusi, withdraw sisi quote (Y) dari bin posisi, lalu re-add ke posisi yang sama dengan strategi `bidask` atau `hybrid` (50% bid-ask Y / 50% spot) — menjawab Q-12.
+> Changelog: v0.7 — tambah **FR-10 sweep validation**: trigger harus bertahan N poll berturut-turut sebelum eksekusi (`sweepValidation.confirmations`, default 2) agar wick/sweep sesaat tidak memicu withdraw/re-add.
 
 ---
 
@@ -137,6 +138,15 @@ Tools ini dibuat untuk memitigasi risiko tersebut secara otomatis:
 - FR-9.6 Guard & safety yang sama berlaku (FR-5.2): lock state machine, `dryRun`, retry, slippage, cek balance minimum; gagal total → stop siklus posisi.
 - FR-9.7 Konfigurasi: `reverseFlip.enabled` (default `true`), `reverseFlip.strategy` (`"bidask"` default | `"hybrid"`), `reverseFlip.hybridBidAskPct` (default `50`).
 - FR-9.8 Setiap reverse flip dicatat di log JSONL + notif Telegram (event `reverseFlipTriggered`/`reverseWithdrawSuccess`/`reverseReAddSuccess`, tx signature).
+
+### FR-10 Sweep Validation (PRD v0.7)
+> Mencegah eksekusi akibat **wick/sweep sesaat**: harga menusuk level lalu langsung kembali — withdraw/re-add pada kondisi tsb membuang fee & menambah slippage.
+
+- FR-10.1 Sebelum eksekusi (EXECUTE_LEVEL **dan** REVERSE_LEVEL), keputusan trigger yang sama (action + level) harus **bertahan N poll berturut-turut** (`sweepValidation.confirmations`, default `2`; `1` = perilaku lama tanpa validasi).
+- FR-10.2 Satu tick yang tidak lagi memenuhi threshold (harga kembali) **mereset** hitungan konfirmasi; streak hanya dihitung untuk pasangan (action, level) yang sama persis.
+- FR-10.3 Streak tidak dipersist (in-memory per monitor); restart engine hanya menunda eksekusi maksimal N-1 tick.
+- FR-10.4 Saat trigger pertama terdeteksi tapi belum terkonfirmasi, dicatat log `sweepPending` (sekali per streak, tidak spam notifikasi).
+- FR-10.5 MAX_STEPS_EXCEEDED tidak divalidasi (alert-only, tidak mengirim tx).
 
 ---
 

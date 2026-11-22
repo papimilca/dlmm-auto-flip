@@ -11,5 +11,8 @@
     "enabled": true,
     "strategy": "bidask",
     "hybridBidAskPct": 50
+  },
+  "sweepValidation": {
+    "confirmations": 2
   }
 }
